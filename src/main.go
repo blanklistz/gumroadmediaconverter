@@ -18,13 +18,20 @@ func init() {
 
 	cfg, err := awsConfig.LoadDefaultConfig(context.TODO(),
 		awsConfig.WithRegion(os.Getenv("AWS_REGION")),
-		awsConfig.WithBaseEndpoint(os.Getenv("AWS_ENDPOINT_URL")),
 	)
 	if err != nil {
 		log.Fatalf("Error initializing AWS config: %v", err)
 	}
 
-	awsClient = s3.NewFromConfig(cfg)
+	// Use custom endpoint for R2/S3-compatible storage
+	endpointURL := os.Getenv("AWS_ENDPOINT_URL")
+	if endpointURL != "" {
+		awsClient = s3.NewFromConfig(cfg, func(o *s3.Options) {
+			o.BaseEndpoint = &endpointURL
+		})
+	} else {
+		awsClient = s3.NewFromConfig(cfg)
+	}
 }
 
 func main() {
