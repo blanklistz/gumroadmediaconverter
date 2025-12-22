@@ -18,6 +18,7 @@ func init() {
 
 	cfg, err := awsConfig.LoadDefaultConfig(context.TODO(),
 		awsConfig.WithRegion(os.Getenv("AWS_REGION")),
+		awsConfig.WithBaseEndpoint(os.Getenv("AWS_ENDPOINT_URL")),
 	)
 	if err != nil {
 		log.Fatalf("Error initializing AWS config: %v", err)
