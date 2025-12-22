@@ -43,6 +43,7 @@ builder:
 # Inject ENV variables into containers (secrets come from .kamal/secrets).
 env:
   clear:
+    PORT: "7454"
     MAX_SIMULTANEOUS_JOBS: "5"
   secret:
     - API_KEY
