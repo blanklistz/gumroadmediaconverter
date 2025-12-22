@@ -1,7 +1,6 @@
 .env
 .env.production
 
-config/deploy.yml
 .kamal/secrets.local
 
 # Generated binary
