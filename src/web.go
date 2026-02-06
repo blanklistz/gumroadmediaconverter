@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -23,6 +24,12 @@ type ConvertRequest struct {
 	Presets     []string `json:"presets"`
 	ID          string   `json:"id"`
 	CallbackURL string   `json:"callback_url"`
+}
+
+// Struct for the POST request to /thumbnail
+type ThumbnailRequest struct {
+	S3VideoURI  string `json:"s3_video_uri"`
+	S3HLSDirURI string `json:"s3_hls_dir_uri"`
 }
 
 // Handler for GET /
@@ -115,6 +122,58 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// Handler for POST /thumbnail
+func handleThumbnail(w http.ResponseWriter, r *http.Request) {
+	if err := AuthenticateRequest(r); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	var req ThumbnailRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.S3VideoURI == "" || req.S3HLSDirURI == "" {
+		http.Error(w, "Missing required fields", http.StatusBadRequest)
+		return
+	}
+
+	tmpDir := fmt.Sprintf("/tmp/thumb_%x", rand.Int63())
+	videoPath := tmpDir + "/video"
+	outDir := tmpDir + "/out"
+	thumbPath := outDir + "/thumbnail.jpg"
+
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		http.Error(w, "Failed to create temp directory", http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := downloadFromS3(req.S3VideoURI, videoPath); err != nil {
+		log.Printf("Thumbnail: failed to download video: %v\n", err)
+		http.Error(w, "Failed to download video", http.StatusInternalServerError)
+		return
+	}
+
+	cmd := exec.Command("ffmpeg", "-i", videoPath, "-vframes", "1", "-q:v", "2", "-vf", "scale=-2:720", thumbPath)
+	if err := cmd.Run(); err != nil {
+		log.Printf("Thumbnail: ffmpeg failed: %v\n", err)
+		http.Error(w, "Failed to extract thumbnail", http.StatusInternalServerError)
+		return
+	}
+
+	if err := uploadToS3(outDir, req.S3HLSDirURI); err != nil {
+		log.Printf("Thumbnail: failed to upload: %v\n", err)
+		http.Error(w, "Failed to upload thumbnail", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 func handleUp(w http.ResponseWriter, r *http.Request) {
 	requiredEnvVars := []string{"PORT", "API_KEY", "MAX_SIMULTANEOUS_JOBS", "AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
 	missingVars := []string{}
@@ -152,6 +211,7 @@ func startWebServer(port string) {
 	r.Use(logRequests)
 	r.HandleFunc("/", handleIndex).Methods("GET")
 	r.HandleFunc("/convert", handleConvert).Methods("POST")
+	r.HandleFunc("/thumbnail", handleThumbnail).Methods("POST")
 	r.HandleFunc("/status", handleStatus).Methods("GET")
 	r.HandleFunc("/up", handleUp).Methods("GET")
 

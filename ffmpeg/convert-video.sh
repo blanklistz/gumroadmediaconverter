@@ -75,6 +75,10 @@ if [[ "$hls_1080p" == "1" ]]; then
   master_playlist_content+="\n$(tail -n 3 "$output_dir/master_1080p.m3u8")"
 fi
 
+# Extract thumbnail from the source video (non-fatal — don't block HLS upload)
+echo "Extracting thumbnail..."
+ffmpeg -i "$input_video" -vframes 1 -q:v 2 -vf "scale=-2:720" "$output_dir/thumbnail.jpg" || echo "Warning: thumbnail extraction failed, continuing..."
+
 # Write the combined master playlist to index.m3u8 in the output directory
 echo -e "$master_playlist_content" > "$output_dir/index.m3u8"
 
