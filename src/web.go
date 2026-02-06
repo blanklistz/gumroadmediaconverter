@@ -27,9 +27,8 @@ type ConvertRequest struct {
 }
 
 // Struct for the POST request to /thumbnail
-type ThumbnailRequest struct {
-	S3VideoURI  string `json:"s3_video_uri"`
-	S3HLSDirURI string `json:"s3_hls_dir_uri"`
+type ThumbnailBatchRequest struct {
+	S3HLSDirURIs []string `json:"s3_hls_dir_uris"`
 }
 
 // Handler for GET /
@@ -123,55 +122,71 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // Handler for POST /thumbnail
+// Accepts a batch of HLS dir URIs. Downloads the first 480p segment from each,
+// extracts a thumbnail with ffmpeg, and uploads it back to S3. Runs in background.
 func handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	if err := AuthenticateRequest(r); err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
 
-	var req ThumbnailRequest
+	var req ThumbnailBatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if req.S3VideoURI == "" || req.S3HLSDirURI == "" {
-		http.Error(w, "Missing required fields", http.StatusBadRequest)
+	if len(req.S3HLSDirURIs) == 0 {
+		http.Error(w, "Missing required field: s3_hls_dir_uris", http.StatusBadRequest)
 		return
 	}
 
+	go processThumbnailBatch(req.S3HLSDirURIs)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "accepted",
+		"count":  fmt.Sprintf("%d", len(req.S3HLSDirURIs)),
+	})
+}
+
+func processThumbnailBatch(hlsDirURIs []string) {
+	for _, hlsDirURI := range hlsDirURIs {
+		if err := generateThumbnailFromSegment(hlsDirURI); err != nil {
+			log.Printf("Thumbnail: failed for %s: %v\n", hlsDirURI, err)
+		} else {
+			log.Printf("Thumbnail: done for %s\n", hlsDirURI)
+		}
+	}
+	log.Printf("Thumbnail batch complete: %d items\n", len(hlsDirURIs))
+}
+
+func generateThumbnailFromSegment(hlsDirURI string) error {
 	tmpDir := fmt.Sprintf("/tmp/thumb_%x", rand.Int63())
-	videoPath := tmpDir + "/video"
+	segmentPath := tmpDir + "/segment.ts"
 	outDir := tmpDir + "/out"
 	thumbPath := outDir + "/thumbnail.jpg"
 
 	if err := os.MkdirAll(outDir, 0755); err != nil {
-		http.Error(w, "Failed to create temp directory", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to create temp directory: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := downloadFromS3(req.S3VideoURI, videoPath); err != nil {
-		log.Printf("Thumbnail: failed to download video: %v\n", err)
-		http.Error(w, "Failed to download video", http.StatusInternalServerError)
-		return
+	segmentURI := strings.TrimSuffix(hlsDirURI, "/") + "/index_480p_00000.ts"
+	if err := downloadFromS3(segmentURI, segmentPath); err != nil {
+		return fmt.Errorf("failed to download segment: %v", err)
 	}
 
-	cmd := exec.Command("ffmpeg", "-i", videoPath, "-vframes", "1", "-q:v", "2", "-vf", "scale=-2:720", thumbPath)
+	cmd := exec.Command("ffmpeg", "-i", segmentPath, "-vframes", "1", "-q:v", "2", "-vf", "scale=-2:720", thumbPath)
 	if err := cmd.Run(); err != nil {
-		log.Printf("Thumbnail: ffmpeg failed: %v\n", err)
-		http.Error(w, "Failed to extract thumbnail", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("ffmpeg failed: %v", err)
 	}
 
-	if err := uploadToS3(outDir, req.S3HLSDirURI); err != nil {
-		log.Printf("Thumbnail: failed to upload: %v\n", err)
-		http.Error(w, "Failed to upload thumbnail", http.StatusInternalServerError)
-		return
+	if err := uploadToS3(outDir, hlsDirURI); err != nil {
+		return fmt.Errorf("failed to upload: %v", err)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	return nil
 }
 
 func handleUp(w http.ResponseWriter, r *http.Request) {
