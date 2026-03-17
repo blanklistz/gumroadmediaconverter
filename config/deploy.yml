@@ -7,7 +7,7 @@ image: gumroadmediaconverter
 # Deploy to these servers.
 servers:
   web:
-    - 5.223.52.122
+    - 100.106.24.27
   # job:
   #   hosts:
   #     - 192.168.0.1
